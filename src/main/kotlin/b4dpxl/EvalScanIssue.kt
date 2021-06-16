@@ -2,11 +2,17 @@ package b4dpxl
 
 import burp.IHttpRequestResponse
 import burp.IHttpService
-import burp.IRequestInfo
 import burp.IScanIssue
 import java.net.URL
 
-class EvalScanIssue(requestResponse: IHttpRequestResponse, url: String, detail: String, severity: String = "Medium", confidence: String = "Firm") : IScanIssue {
+class EvalScanIssue(requestResponse: IHttpRequestResponse, url: String, detail: String, severity: String = "Medium",
+                    confidence: Confidence = Confidence.FIRM) : IScanIssue {
+
+    enum class Confidence(val confidence: String) {
+        CERTAIN("Certain"),
+        FIRM("Firm"),
+        TENTATIVE("Tentative")
+    }
 
     val _url: URL
     val _detail = detail.trim()
@@ -29,7 +35,7 @@ class EvalScanIssue(requestResponse: IHttpRequestResponse, url: String, detail: 
     }
 
     override fun getIssueName(): String {
-        return "JavaScript eval() call"
+        return "JavaScript eval() or Function() call"
     }
 
     override fun getIssueType(): Int {
@@ -41,11 +47,16 @@ class EvalScanIssue(requestResponse: IHttpRequestResponse, url: String, detail: 
     }
 
     override fun getConfidence(): String {
-        return _confidence
+        return _confidence.confidence.toString()
     }
 
     override fun getIssueBackground(): String? {
-        return """<code>eval()</code> is a dangerous JavaScript function, which executes arbitrary code in the context of the caller. If an attacker can influence the code which is called, they can run custom scripts and exploit vulnerabilities such as Cross-Site Scripting (XSS). Alternative, safe methods can usually be found which do not rely on the eval() and related Function() methods."""
+        return """<code>eval()</code> is a dangerous JavaScript function, which executes arbitrary code in the 
+            |context of the caller. If an attacker can influence the code which is called, they can run custom 
+            |scripts and exploit vulnerabilities such as Cross-Site Scripting (XSS). Although not as 
+            |dangerous, calls to <code>Function()</code> or <code>new Function()</code> may also be 
+            |exploited in the same manner. Alternative, safe methods can usually be found which do 
+            |not rely on the eval() and related Function() methods.""".trimMargin()
     }
 
     override fun getRemediationBackground(): String? {

@@ -22,7 +22,7 @@ class Evaluator constructor(callbacks: IBurpExtenderCallbacks?) : IProxyListener
     private val configCallback = "callback"
 
     init {
-        Utilities(callbacks, true)
+        Utilities(callbacks, false)
         Utilities.callbacks.setExtensionName(extensionName)
         Utilities.callbacks.registerProxyListener(this)
         Utilities.callbacks.registerExtensionStateListener(this)
@@ -53,13 +53,13 @@ class Evaluator constructor(callbacks: IBurpExtenderCallbacks?) : IProxyListener
                 break
             }
         }
-        Utilities.println("Loaded ${extensionName}!")
+        Utilities.println("Loaded ${extensionName}")
     }
 
     override fun processProxyMessage(messageIsRequest: Boolean, proxyMessage: IInterceptedProxyMessage) {
 
         if (! enabledMenu.isSelected) {
-            return;
+            return
         }
 
         val requestResponse = proxyMessage.messageInfo
@@ -86,7 +86,7 @@ class Evaluator constructor(callbacks: IBurpExtenderCallbacks?) : IProxyListener
                     val issue = EvalScanIssue(
                         requestResponse,
                         baseURL,
-                        """<p>The page called the JavaScript <code>eval()</code> function from <code>${requestInfo.url}</code></p>
+                        """<p>The page called the JavaScript <code>${json.getValue("function")}()</code> function from <code>${requestInfo.url}</code></p>
 <p>
 <b>Executed call:</b> <code>${json.getValue("call")}</code>
 </p>
@@ -99,8 +99,10 @@ class Evaluator constructor(callbacks: IBurpExtenderCallbacks?) : IProxyListener
 ${json.getValue("script")}
 </code></pre>
 <br />
-<p>Note: The <code>eval()</code> call was renamed to <code>${evalNamePrefix}_eval()</code> by ${extensionName}.</p>
-""".trim()
+<p>Note: The <code>${json.getValue("function")}()</code> call was renamed to <code>${evalNamePrefix}_${json.getValue("function")}()</code> by ${extensionName}.</p>
+""".trim(),
+                        confidence = if (json.getValue("function") == "eval") EvalScanIssue.Confidence.CERTAIN else
+                            EvalScanIssue.Confidence.FIRM
                     )
 
                     var isNewIssue = true
@@ -145,33 +147,21 @@ ${json.getValue("script")}
             val responseInfo = Utilities.helpers.analyzeResponse(requestResponse?.response)
             val body: String = Utilities.helpers.bytesToString(Utilities.getResponseBody(requestResponse))
 
-            val rex = "\\b(eval\\s*\\()"
+            val rex = "\\b((eval|Function)\\s*\\()"
             val pattern = Regex(rex)
-
             if (responseInfo.inferredMimeType.equals("script", true) && pattern.containsMatchIn(body)) {
                 val url = requestInfo.url
-                Utilities.println("Found ${pattern.findAll(body).count()} eval() to modify in ${url}")
+                Utilities.println("Found ${pattern.findAll(body).count()} eval() or Function() calls to modify in ${url}")
 
                 var newBody = """
-function ${evalNamePrefix}_eval(x) {
-    call = `eval(${"$"}{x})`;
-    code = "";
-    msg = call;
-    if (${evalNamePrefix}_eval.caller != null) {
-        msg += "\n> " + String(${evalNamePrefix}_eval.caller).match(/(?<=${evalNamePrefix}_)eval\(.*?\)/)[0];
-    }
-    console.info(`In ${"$"}{location.href}:\n${"$"}{msg}`);
-    if (${evalNamePrefix}_eval.caller != null) {
-        code = String(${evalNamePrefix}_eval.caller).replace("${evalNamePrefix}_eval(", "eval(");
-        console.debug("${evalNamePrefix}_eval() called by: " + code);
-    }
-"""
-                if (callbackMenu.isSelected) {
-                    newBody += """                    
+function ${evalNamePrefix}_callback(fn, call, code) {"""
+                if (callbackMenu.isSelected) {  // this function is empty if callbacks are disabled
+                    newBody += """
     // send the request back to burp for logging
     try {
         data = {
             "url": location.href,
+            "function": fn,
             "call": call,
             "script": code
         };
@@ -181,13 +171,35 @@ function ${evalNamePrefix}_eval(x) {
             headers: {"Content-Type": "application/json", "X-EVALUATOR": "1"}
         });
     } catch (e) {console.error(e);}
-    """
+"""
                 }
-
                 newBody += """
+}          
+function ${evalNamePrefix}_log(call) {
+    fn = ${evalNamePrefix}_log.caller;
+    fn_name = fn.name.match(/(?<=[A-Z]+_)(eval|Function)/)[0];
+    code = "";
+    msg = call;
+    if (fn.caller != null) {
+        msg += "\n> " + String(fn.caller).match(/(?<=[A-Z]+_)(eval|Function)\(.*?\)/)[0];
+    }
+    console.info("In " + location.href + ":\n" + msg);
+    if (fn.caller != null) {
+        code = String(fn.caller).replace(/[A-Z]+_(eval|Function)\(/, "$1(");
+        console.debug(fn_name + "() called by:\n" + code);
+    }
+    ${evalNamePrefix}_callback(fn_name, call, code);
+}
+
+function ${evalNamePrefix}_eval(x) {
+    ${evalNamePrefix}_log(`eval(${"$"}{x})`);
     return eval(x);
 }
-""" + body.replace(pattern, evalNamePrefix + "_eval(")
+function ${evalNamePrefix}_Function(x) {
+    ${evalNamePrefix}_log(`Function(${"$"}{x})`);
+    return Function(x);
+}
+""" + body.trimIndent().replace(pattern, evalNamePrefix + "_$2(")
 
                 requestResponse?.response = Utilities.helpers.buildHttpMessage(
                     responseInfo.headers,
